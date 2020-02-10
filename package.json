@@ -5,6 +5,7 @@
   "main": "dist/job.js",
   "types": "dist/job.d.ts",
   "scripts": {
+    "postinstall": "npm run build",
     "build": "npm run clean; tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "pretest": "npm run lint",
