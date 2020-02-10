@@ -1,4 +1,4 @@
-import { job, stop, start } from '../src/job'
+import { job, start, stop } from '../src/job'
 
 beforeAll(async () => await start())
 afterAll(async () => await stop())
@@ -162,9 +162,29 @@ describe('Job Testing', () => {
 
     expect(error).toBeDefined()
     expect(error.message).toEqual(
-      'class Person {\n            } could not be cloned.'
+        'class Person {\n            } could not be cloned.'
     )
     expect(typeof error.stack).toBe('string')
     expect(res).toBeUndefined()
   })
+
+  it('should execute a static job', async () => {
+    let error
+    let res
+
+    try {
+      res = await job((data, transfetList: [ArrayBuffer]) => {
+        const [arrayBuffer] = transfetList
+        return new Uint8Array(arrayBuffer).reduce((previousValue, currentValue) => {
+          return previousValue + currentValue
+        })
+      }, { static: true, transferList: [new Uint8Array([1, 2, 3, 4]).buffer] })
+    } catch (err) {
+      error = err
+    }
+
+    expect(error).toBeUndefined()
+    expect(res).toBe(10)
+  })
+
 })

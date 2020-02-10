@@ -2,7 +2,7 @@ import { Worker } from 'worker_threads'
 // @ts-ignore
 import { serialize } from 'v8'
 import { cpus } from 'os'
-import { Task, WorkerWrapper, SetupConfig } from './interfaces'
+import { Config, SetupConfig, Task, WorkerWrapper } from './interfaces'
 import { workerFile } from './worker'
 
 const WORKER_STATE_READY = 'ready'
@@ -18,6 +18,7 @@ const NODE_VERSION_MAJOR = parseInt(NODE_VERSION_SPLIT[0])
 const NODE_VERSION_MINOR = parseInt(NODE_VERSION_SPLIT[1])
 
 class WorkerPool {
+  private staticWorkerMap: Map<Function, string> = new Map<Function, string>()
   private maxWorkers = AVAILABLE_CPUS
   private taskQueue: Task[] = []
   private workers: WorkerWrapper[] = []
@@ -51,11 +52,63 @@ class WorkerPool {
     })
   }
 
-  tick(): void {
+  generateWorkerString (config: Config, handler: Function): string {
+    let variables = ''
+    for (const key in config.ctx) {
+      if (!config.ctx.hasOwnProperty(key)) continue
+
+      let variable
+      switch (typeof config.ctx[key]) {
+        case 'string':
+          variable = `'${config.ctx[key]}'`
+          break
+        case 'object':
+          variable = JSON.stringify(config.ctx[key])
+          break
+        default:
+          variable = config.ctx[key]
+      }
+      variables += `let ${key} = ${variable}\n`
+    }
+
+    const dataSerialized = serialize(config.data)
+    const dataStr = JSON.stringify(dataSerialized)
+    return `
+      async function __executor__() {
+        const v8 = require('v8')
+        ${variables}
+        const dataParsed = JSON.parse('${dataStr}')
+        const dataBuffer = Buffer.from(dataParsed.data)
+        const dataDeserialized = v8.deserialize(dataBuffer)
+        return await (${handler.toString()})(dataDeserialized)
+      }
+      `
+  }
+
+  generateStaticWorkerString (config: Config, handler: Function): string {
+    let workerStr = this.staticWorkerMap.get(handler)
+    if (typeof (workerStr) == 'undefined') {
+      const dataSerialized = serialize(config.data)
+      const dataStr = JSON.stringify(dataSerialized)
+      workerStr = `
+      async function __executor__(transferList) {
+        const v8 = require('v8')
+        const dataParsed = JSON.parse('${dataStr}')
+        const dataBuffer = Buffer.from(dataParsed.data)
+        const dataDeserialized = v8.deserialize(dataBuffer)
+        return await (${handler.toString()})(dataDeserialized, transferList)
+      }
+      `
+      this.staticWorkerMap.set(handler, workerStr)
+    }
+    return workerStr
+  }
+
+  tick (): void {
     // check for dead threads and resurrect them
     this.workers
-      .filter(({ status }) => status === WORKER_STATE_OFF)
-      .forEach((deadWorker: WorkerWrapper) => this.resurrect(deadWorker))
+        .filter(({ status }) => status === WORKER_STATE_OFF)
+        .forEach((deadWorker: WorkerWrapper) => this.resurrect(deadWorker))
 
     if (this.taskQueue.length === 0) return
 
@@ -76,37 +129,6 @@ class WorkerPool {
     const { handler, config, resolve, reject } = work
 
     try {
-      let variables = ''
-      for (const key in config.ctx) {
-        if (!config.ctx.hasOwnProperty(key)) continue
-
-        let variable
-        switch (typeof config.ctx[key]) {
-          case 'string':
-            variable = `'${config.ctx[key]}'`
-            break
-          case 'object':
-            variable = JSON.stringify(config.ctx[key])
-            break
-          default:
-            variable = config.ctx[key]
-        }
-        variables += `let ${key} = ${variable}\n`
-      }
-
-      const dataSerialized = serialize(config.data)
-      const dataStr = JSON.stringify(dataSerialized)
-      const workerStr = `
-      async function __executor__() {
-        const v8 = require('v8')
-        ${variables}
-        const dataParsed = JSON.parse('${dataStr}')
-        const dataBuffer = Buffer.from(dataParsed.data)
-        const dataDeserialized = v8.deserialize(dataBuffer)
-        return await (${handler.toString()})(dataDeserialized)
-      }
-      `
-
       worker.once('message', (message: any) => {
         this.free(worker)
 
@@ -124,7 +146,11 @@ class WorkerPool {
         this.tick()
       })
 
-      worker.postMessage(workerStr)
+      if (config.static) {
+        worker.postMessage([this.generateStaticWorkerString(config, handler), true, config.transferList], config.transferList)
+      } else {
+        worker.postMessage([this.generateWorkerString(config, handler), false])
+      }
     } catch (err) {
       this.free(worker)
       reject(err)

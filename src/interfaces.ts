@@ -1,8 +1,10 @@
-import { Worker } from 'worker_threads'
+import { MessagePort, Worker } from 'worker_threads'
 
-export interface Config<T = {}, U = {}> {
+export interface Config<T = {}, U = {}, TL = (ArrayBuffer | MessagePort)[]> {
   ctx?: T
   data?: U
+  transferList?: TL
+  static?: boolean
 }
 
 export interface Task {
